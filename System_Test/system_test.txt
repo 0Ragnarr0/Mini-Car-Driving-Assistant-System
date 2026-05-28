@@ -1,5 +1,5 @@
 
-Begineer  level safe test
+Beginner  level safe test
  - set the safe distance for normal driving
 
 Intermdediate level safe test 
