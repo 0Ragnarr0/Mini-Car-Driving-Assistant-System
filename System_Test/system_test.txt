@@ -1,0 +1,7 @@
+
+Begineer  level safe test
+ - set the safe distance for normal driving
+
+Intermdediate level safe test 
+ - Include the avoidable and unavoidable situation test.
+ - Set the emergency safe distance
