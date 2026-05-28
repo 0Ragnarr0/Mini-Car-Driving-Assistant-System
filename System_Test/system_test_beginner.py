@@ -6,11 +6,13 @@ class SafetyConfig():
 
     def __init__(self, distance_to_obstacle):
         self.distance_to_obstacle = distance_to_obstacle
+
     def check_safety(self):
         if self.distance_to_obstacle >= self.safe_distance_normal_threshold:
-            return "Pass - Safe distance maintained"
+            return f"Pass - Safe distance maintained, {self.distance_to_obstacle} meters apart."
         else:
-            return "Fail - Unsafe distance to obstacle", self.distance_to_obstacle-self.safe_distance_normal_threshold, "meters below normal threshold"
+            error_distance = self.safe_distance_normal_threshold - self.distance_to_obstacle
+            return f"Fail - Unsafe distance to obstacle.{error_distance} meters below normal threshold"
 
 #Example usage
 if __name__ == "__main__":
