@@ -42,3 +42,10 @@ temp/
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# ML Models and Training Data
+*.pth
+*.npz
+trained_models/
+training_data/
+logs/
