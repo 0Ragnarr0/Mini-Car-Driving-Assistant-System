@@ -135,23 +135,31 @@ class SimulationMonitor:
             'average_speed': self.distance_traveled / max(elapsed, 0.1)
         }
 
-
 def create_demo_training_data(num_samples=1000):
     """
-    Create demo training data for testing.
+    Create demo training data for testing the Multimodal CNN architecture.
     
     Args:
         num_samples: Number of training samples to generate
     
     Returns:
-        Tuple of (sensor_data, labels)
+        Tuple of (sensor_data_dict, labels)
     """
-    input_size = 4106  # 4096 fisheye + 10 LIDAR points
+    # Generate random arrays matching the exact CNN + Multimodal input shapes
+    camera = np.random.rand(num_samples, 64, 64, 3).astype(np.float32)
+    lidar = np.random.rand(num_samples, 64).astype(np.float32)
+    gps = np.random.rand(num_samples, 2).astype(np.float32)
+    gyro = np.random.rand(num_samples, 1).astype(np.float32)
     
-    # Generate random sensor data
-    sensor_data = np.random.rand(num_samples, input_size).astype(np.float32)
+    # Labels: [Steering (-1 to 1), Speed (0 to 1 or -1 to 1)]
+    labels = np.random.uniform(-1.0, 1.0, size=(num_samples, 2)).astype(np.float32)
     
-    # Generate corresponding labels (steering, speed)
-    labels = np.random.uniform(-1, 1, (num_samples, 2)).astype(np.float32)
+    # Package into the expected dictionary format
+    sensor_data = {
+        'camera': camera,
+        'lidar': lidar,
+        'gps': gps,
+        'gyro': gyro
+    }
     
     return sensor_data, labels

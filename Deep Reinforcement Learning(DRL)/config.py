@@ -64,7 +64,7 @@ RL_CONFIG = {
     'batch_size': 128,
     'replay_size': 100000,
     'warmup_steps': 2000,
-    'action_noise': 0.15,
+    'action_noise': 0.4,  # Increased from 0.15 for better exploration
     'hidden_dim': 256,
     'max_episode_steps': 1200,
     'save_every_episodes': 10,
@@ -83,6 +83,8 @@ RL_CONFIG = {
             'risk_penalty_weight': 0.50,
             'avoidance_bonus_weight': 0.25,
             'collision_penalty': 3.00,
+            'lane_keeping_bonus_weight': 0.15,  # Reward for staying in lane
+            'lane_violation_penalty': 0.50,  # Penalty for going off-road
         },
         'aggressive_avoidance': {
             'base_reward': 0.05,
@@ -91,6 +93,8 @@ RL_CONFIG = {
             'risk_penalty_weight': 0.90,
             'avoidance_bonus_weight': 0.40,
             'collision_penalty': 4.00,
+            'lane_keeping_bonus_weight': 0.10,
+            'lane_violation_penalty': 0.40,
         },
         'smooth_drive': {
             'base_reward': 0.12,
@@ -99,6 +103,8 @@ RL_CONFIG = {
             'risk_penalty_weight': 0.45,
             'avoidance_bonus_weight': 0.16,
             'collision_penalty': 3.20,
+            'lane_keeping_bonus_weight': 0.20,  # Prioritize lane-keeping
+            'lane_violation_penalty': 0.60,
         },
     },
 }

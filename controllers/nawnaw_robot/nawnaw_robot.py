@@ -3,7 +3,11 @@
 import os
 import sys
 import importlib
+import traceback
+import faulthandler
 import numpy as np
+
+faulthandler.enable(all_threads=True)
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -176,10 +180,16 @@ class AutonomousDrivingController:
         self.gps = self._get_device_if_exists(['gps', 'GPS'])
         if self.gps is not None:
             self.gps.enable(self.timestep)
-        
+
+        # Prefer InertialUnit when available, otherwise fall back to Gyro.
         self.inertial_unit = self._get_device_if_exists(['inertial unit', 'InertialUnit'])
+        self.gyro_sensor = None
         if self.inertial_unit is not None:
             self.inertial_unit.enable(self.timestep)
+        else:
+            self.gyro_sensor = self._get_device_if_exists(['gyro', 'Gyro'])
+            if self.gyro_sensor is not None:
+                self.gyro_sensor.enable(self.timestep)
     
     def _setup_ai_model(self):
         """Setup the AI inference engine."""
@@ -325,13 +335,25 @@ class AutonomousDrivingController:
                 gyro_data = self.inertial_unit.getValues()  # [roll, pitch, yaw]
             except Exception:
                 gyro_data = None
+        elif self.gyro_sensor is not None:
+            try:
+                gyro_data = self.gyro_sensor.getValues()  # [roll, pitch, yaw]
+            except Exception:
+                gyro_data = None
+
+        imu_data = None
+        if self.inertial_unit is not None:
+            try:
+                imu_data = self.inertial_unit.getValues()
+            except Exception:
+                imu_data = None
         
         return {
             'depth': depth_data,
             'fisheye': fisheye_data,
             'distances': distances,
             'gps': gps_data,
-            'imu': self.inertial_unit.getValues() if self.inertial_unit else None,
+            'imu': imu_data,
             'lidar': lidar_ranges,
             'gyro': gyro_data,
         }
@@ -516,6 +538,8 @@ class AutonomousDrivingController:
         risk_penalty_weight = float(cfg.get('risk_penalty_weight', 0.50))
         avoidance_bonus_weight = float(cfg.get('avoidance_bonus_weight', 0.25))
         collision_penalty = float(cfg.get('collision_penalty', 3.00))
+        lane_keeping_bonus_weight = float(cfg.get('lane_keeping_bonus_weight', 0.15))
+        lane_violation_penalty = float(cfg.get('lane_violation_penalty', 0.50))
 
         forward_reward = max(0.0, (speed_cmd + 1.0) * 0.5)
         steering_penalty = steering_penalty_weight * abs(steer_cmd)
@@ -524,7 +548,37 @@ class AutonomousDrivingController:
         risk_penalty = risk_penalty_weight * obstacle_risk * max(0.0, (speed_cmd + 1.0) * 0.5)
         avoidance_bonus = avoidance_bonus_weight * obstacle_risk * abs(steer_cmd)
 
-        reward = base_reward + forward_weight * forward_reward + avoidance_bonus - steering_penalty - risk_penalty
+        # Lane-keeping reward: bonus for staying centered (low side distance variance)
+        # Penalty for going off-road (distance sensors indicate road edges)
+        lane_keeping_bonus = 0.0
+        lane_violation = 0.0
+        
+        if distances and len(distances) >= 2:
+            side_distances = np.asarray(distances, dtype=np.float32)
+            # If side sensors are relatively equal, car is centered
+            # If one side is much closer, car is drifting
+            if len(side_distances) > 0:
+                side_min = float(np.min(side_distances))
+                side_max = float(np.max(side_distances))
+                side_range = side_max - side_min
+                
+                # Bonus for balanced center position (small side range)
+                if side_range < 1.0:
+                    lane_keeping_bonus = lane_keeping_bonus_weight * (1.0 - side_range)
+                
+                # Penalty for excessive off-road drift (very close to one side)
+                if side_min < 0.3:
+                    lane_violation = lane_violation_penalty * (1.0 - (side_min / 0.3))
+
+        reward = (
+            base_reward 
+            + forward_weight * forward_reward 
+            + avoidance_bonus 
+            + lane_keeping_bonus
+            - steering_penalty 
+            - risk_penalty 
+            - lane_violation
+        )
 
         collision = (lidar_min < self.rl_collision_distance) or (dist_min < 0.05)
         if collision:
@@ -542,11 +596,8 @@ class AutonomousDrivingController:
         """Best-effort episode reset in non-supervisor mode."""
         self.apply_control(0.0, -1.0)
 
-        if hasattr(self.robot, 'simulationResetPhysics'):
-            try:
-                self.robot.simulationResetPhysics()
-            except Exception:
-                pass
+        # Do not call simulationResetPhysics from a Robot controller.
+        # Webots allows this only from Supervisor and prints an error otherwise.
 
         self.rl_episode_idx += 1
         self.rl_episode_step = 0
@@ -557,12 +608,22 @@ class AutonomousDrivingController:
         """Main online RL loop using DDPG and Webots interaction."""
         mode_label = 'evaluation' if self.rl_eval else 'training'
         print(f"[Controller] Starting true deep reinforcement learning loop ({mode_label})...")
+        print(f"[RL] Warmup phase: first {self.rl_agent.warmup_steps} steps collect experience without learning")
+        print(f"[RL] After warmup, actor/critic networks will update and losses will be printed")
+
+        episode_rewards = []  # Track rewards for progress
+        start_time = None
+
+        # Advance one simulation step before first sensor read.
+        # Some Webots devices are not safe to read before an initial step.
+        initial_step = self.driver.step() if self.driver is not None else self.robot.step(self.timestep)
+        if initial_step == -1:
+            return
+
+        sensor_data = self.read_sensor_data()
+        state = self._build_rl_state(sensor_data)
 
         while True:
-            # Observe current state
-            sensor_data = self.read_sensor_data()
-            state = self._build_rl_state(sensor_data)
-
             # Exploration is enabled only while training.
             action = self.rl_agent.select_action(state, explore=self.rl_train)
             steering_cmd = float(action[0]) * float(SENSOR_CONFIG.get('max_steering_angle', 1.57))
@@ -570,11 +631,25 @@ class AutonomousDrivingController:
 
             self.apply_control(steering_cmd, speed_cmd)
             self.rl_last_steering = float(action[0])
+            
+            # Debug: print action every 200 steps during warmup phase
+            if self.step_count < 2500 and self.step_count % 200 == 0:
+                learning_status = "WARMUP (no learning yet)" if len(self.rl_agent.replay) < self.rl_agent.warmup_steps else "LEARNING (networks updating)"
+                print(
+                    f"[RL] step={self.step_count}, {learning_status}, "
+                    f"action=[{action[0]:+.3f}, {action[1]:+.3f}], "
+                    f"steering_cmd={steering_cmd:+.3f}rad, speed_cmd={speed_cmd:+.3f}, "
+                    f"buffer={len(self.rl_agent.replay)}/{self.rl_agent.replay_size}"
+                )
 
             # Advance simulation and observe transition
             step_result = self.driver.step() if self.driver is not None else self.robot.step(self.timestep)
             if step_result == -1:
                 break
+
+            if start_time is None:
+                import time
+                start_time = time.time()
 
             next_sensor_data = self.read_sensor_data()
             next_state = self._build_rl_state(next_sensor_data)
@@ -592,32 +667,46 @@ class AutonomousDrivingController:
                 loss_msg = ""
                 if self.rl_train and self.rl_last_losses is not None:
                     loss_msg = (
-                        f", actor_loss={self.rl_last_losses['actor_loss']:.4f}"
-                        f", critic_loss={self.rl_last_losses['critic_loss']:.4f}"
+                        f", actor_loss={self.rl_last_losses['actor_loss']:.6f}"
+                        f", critic_loss={self.rl_last_losses['critic_loss']:.6f}"
+                        f", updates={self.rl_last_losses['updates']}"
                     )
+                learning_active = "✓LEARNING" if len(self.rl_agent.replay) >= self.rl_agent.warmup_steps else "warming up"
                 print(
-                    f"[RL] step={self.step_count}, episode={self.rl_episode_idx}, "
-                    f"ep_step={self.rl_episode_step}, reward={self.rl_episode_reward:.2f}, "
-                    f"lidar_min={info['lidar_min']:.2f}{loss_msg}"
+                    f"[RL] [{learning_active}] step={self.step_count}, episode={self.rl_episode_idx}, "
+                    f"ep_step={self.rl_episode_step}, ep_reward={self.rl_episode_reward:.2f}, "
+                    f"lidar_min={info['lidar_min']:.2f}m{loss_msg}"
                 )
 
             if done:
+                episode_rewards.append(self.rl_episode_reward)
+                avg_reward = np.mean(episode_rewards[-10:]) if episode_rewards else 0
                 print(
                     f"[RL] Episode {self.rl_episode_idx} finished: "
                     f"steps={self.rl_episode_step}, reward={self.rl_episode_reward:.2f}, "
-                    f"collision={info['collision']}"
+                    f"avg_10ep={avg_reward:.2f}, collision={info['collision']}"
                 )
 
                 if self.rl_train and (self.rl_episode_idx + 1) % max(1, self.rl_save_every) == 0:
                     ckpt_prefix = f"{self.rl_model_prefix}_ep_{self.rl_episode_idx + 1}"
                     self.rl_agent.save(ckpt_prefix)
-                    print(f"[RL] Saved checkpoint: {ckpt_prefix}_actor.pth / _critic.pth")
+                    print(f"[RL] ✓ SAVED checkpoint: {ckpt_prefix}_actor.pth / _critic.pth")
 
                 if self.rl_eval and (self.rl_episode_idx + 1) >= max(1, self.rl_eval_episodes):
                     print(f"[RL] Evaluation finished after {self.rl_eval_episodes} episodes")
                     break
 
                 self._reset_rl_episode()
+                step_result = self.driver.step() if self.driver is not None else self.robot.step(self.timestep)
+                if step_result == -1:
+                    break
+                sensor_data = self.read_sensor_data()
+                state = self._build_rl_state(sensor_data)
+                continue
+
+            # Continue rollout from the observed next state.
+            sensor_data = next_sensor_data
+            state = next_state
     
     def run(self):
         """Main control loop."""
@@ -664,7 +753,22 @@ def main():
     #   hybrid  -> run trained model and keep collecting new labels
     #   rl      -> true online deep reinforcement learning (DDPG)
     #   rl_eval -> deterministic policy rollout using an RL checkpoint
-    mode = os.environ.get('NAWNAW_MODE', 'collect').strip().lower()
+    mode = os.environ.get('NAWNAW_MODE', '').strip().lower()
+    mode_source = 'env'
+
+    # Webots can pass startup args through `controllerArgs` in the world file.
+    if not mode and len(sys.argv) > 1:
+        arg_mode = sys.argv[1].strip().lower()
+        if arg_mode.startswith('--mode='):
+            mode = arg_mode.split('=', 1)[1]
+            mode_source = 'controllerArgs(--mode=...)'
+        else:
+            mode = arg_mode
+            mode_source = 'controllerArgs'
+
+    if not mode:
+        mode = 'collect'
+        mode_source = 'default'
 
     if mode == 'collect':
         use_model = False
@@ -699,8 +803,9 @@ def main():
         rl_eval = False
 
     print(
-        f"[Controller] Mode={mode}, use_model={use_model}, "
-        f"collect_data={collect_data}, rl_train={rl_train}, rl_eval={rl_eval}"
+        f"[Controller] mode='{mode}' (source={mode_source}) | "
+        f"use_model={use_model}, collect_data={collect_data}, "
+        f"rl_train={rl_train}, rl_eval={rl_eval}"
     )
     controller = AutonomousDrivingController(
         use_model=use_model,
@@ -713,6 +818,9 @@ def main():
         controller.run()
     except KeyboardInterrupt:
         print("[Controller] Shutting down...")
+    except Exception as exc:
+        print(f"[Controller] Fatal error: {exc}")
+        traceback.print_exc()
     finally:
         if controller.collect_data:
             controller.data_collector.save_batch()
