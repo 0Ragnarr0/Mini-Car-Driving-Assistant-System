@@ -38,6 +38,8 @@ WEBOTS_CONFIG = config_module.WEBOTS_CONFIG
 SENSOR_CONFIG = config_module.SENSOR_CONFIG
 DATA_CONFIG = config_module.DATA_CONFIG
 RL_CONFIG = getattr(config_module, 'RL_CONFIG', {})
+SAFETY_CONFIG = getattr(config_module, 'SAFETY_CONFIG', {})
+REWARD_VALIDATION = getattr(config_module, 'REWARD_VALIDATION', {})
 DDPGAgent = rl_agent_module.DDPGAgent
 
 
@@ -448,17 +450,39 @@ class AutonomousDrivingController:
     
     def apply_control(self, steering_angle, speed_control):
         """
-        Apply control commands to robot.
+        Apply control commands to robot with safety constraints.
         
         Args:
             steering_angle: Target steering angle in radians
             speed_control: Target speed in m/s (normalized -1 to 1)
         """
+        # Safety constraint: Apply hard limits if enabled
+        safety_enabled = bool(SAFETY_CONFIG.get('enable_safety_checks', True))
+        if safety_enabled:
+            max_steering = float(SENSOR_CONFIG.get('max_steering_angle', 1.57))
+            steering_angle = float(np.clip(steering_angle, -max_steering, max_steering))
+            
+            # Limit steering rate (smooth steering, not jerky)
+            max_steering_rate = float(SAFETY_CONFIG.get('max_steering_rate', 1.0))
+            if hasattr(self, 'rl_last_steering'):
+                steering_delta = abs(steering_angle - self.rl_last_steering)
+                if steering_delta > max_steering_rate:
+                    direction = 1.0 if steering_angle > self.rl_last_steering else -1.0
+                    steering_angle = self.rl_last_steering + direction * max_steering_rate
+            
+            # Reduce speed when steering heavily (safer cornering)
+            max_steering_for_full_speed = 0.3
+            if abs(steering_angle) > max_steering_for_full_speed:
+                speed_reduction = (abs(steering_angle) - max_steering_for_full_speed) / (max_steering - max_steering_for_full_speed)
+                speed_control = speed_control * (1.0 - speed_reduction * 0.5)  # Up to 50% speed reduction
+        
         # Driver API path (BmwX5 / car models)
         if self.driver is not None:
             steering = float(np.clip(steering_angle, -0.5, 0.5))
             # Convert normalized speed to m/s then to km/h for Driver API.
             speed_ms = float((speed_control + 1) / 2 * 8.0)
+            max_speed = float(SAFETY_CONFIG.get('max_speed_limit', 5.0))
+            speed_ms = float(np.clip(speed_ms, 0.0, max_speed))
             speed_kmh = max(0.0, speed_ms * 3.6)
             self.driver.setSteeringAngle(steering)
             self.driver.setCruisingSpeed(speed_kmh)
@@ -735,6 +759,18 @@ class AutonomousDrivingController:
             steering_cmd = float(action[0]) * float(SENSOR_CONFIG.get('max_steering_angle', 1.57))
             speed_cmd = float(action[1])
 
+            # Emergency braking: Safety override (hard constraint, not learned)
+            emergency_brake_enabled = bool(SAFETY_CONFIG.get('enable_safety_checks', True))
+            if emergency_brake_enabled:
+                # Get current sensor reading to decide if we need emergency brake for next step
+                emergency_threshold = float(SAFETY_CONFIG.get('emergency_brake_lidar_threshold', 0.25))
+                if sensor_data.get('lidar') is not None:
+                    lidar_current = float(np.min(np.asarray(sensor_data['lidar'], dtype=np.float32)))
+                    if lidar_current < emergency_threshold:
+                        speed_cmd = -1.0  # Full reverse (emergency brake)
+                        if self.step_count % 500 == 0:
+                            print(f"[SAFETY] Emergency brake at step {self.step_count} (lidar={lidar_current:.2f}m)")
+
             self.apply_control(steering_cmd, speed_cmd)
             self.rl_last_steering = float(action[0])
             
@@ -788,10 +824,36 @@ class AutonomousDrivingController:
                 episode_rewards.append(self.rl_episode_reward)
                 avg_reward = np.mean(episode_rewards[-10:]) if episode_rewards else 0
                 collision_info = f"collisions={self.rl_episode_collision_count}" if self.rl_episode_collision_count > 0 else "collision=none"
+                
+                # Reward validation: detect anomalies that suggest reward hacking
+                validate_rewards = bool(REWARD_VALIDATION.get('enable_validation', True))
+                validation_flags = []
+                if validate_rewards:
+                    max_reward = float(REWARD_VALIDATION.get('max_single_step_reward', 10.0))
+                    if self.rl_episode_reward > max_reward * self.rl_episode_step:
+                        validation_flags.append("⚠️ ANOMALY: Reward/step too high (possible hacking)")
+                    
+                    min_reward = float(REWARD_VALIDATION.get('min_episode_reward', -100.0))
+                    if self.rl_episode_reward < min_reward:
+                        validation_flags.append("⚠️ ANOMALY: Very negative reward (trapped/crashing)")
+                    
+                    efficiency = self.rl_episode_reward / max(1, self.rl_episode_step)
+                    min_efficiency = float(REWARD_VALIDATION.get('episode_efficiency_min', 0.1))
+                    if efficiency < -min_efficiency and self.rl_episode_idx > 5:
+                        validation_flags.append(f"⚠️ WARNING: Low efficiency ({efficiency:.3f}/step)")
+                    
+                    # Collision rate check
+                    if self.rl_episode_idx > 0 and len(episode_rewards) > 10:
+                        collision_threshold = float(REWARD_VALIDATION.get('collision_rate_threshold', 0.5))
+                        collision_count = sum(1 for r in episode_rewards[-10:] if r < 0)
+                        if collision_count / 10 > collision_threshold:
+                            validation_flags.append(f"⚠️ WARNING: High collision rate ({collision_count}/10 episodes)")
+                
+                validation_str = " | " + " | ".join(validation_flags) if validation_flags else ""
                 print(
                     f"[RL] Episode {self.rl_episode_idx} finished: "
                     f"steps={self.rl_episode_step}, reward={self.rl_episode_reward:.2f}, "
-                    f"avg_10ep={avg_reward:.2f}, {collision_info}"
+                    f"avg_10ep={avg_reward:.2f}, {collision_info}{validation_str}"
                 )
 
                 if self.rl_train and (self.rl_episode_idx + 1) % max(1, self.rl_save_every) == 0:

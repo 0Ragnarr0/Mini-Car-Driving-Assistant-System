@@ -109,3 +109,25 @@ RL_CONFIG = {
         },
     },
 }
+
+# Safety constraints for RL training (hard limits, not soft rewards)
+SAFETY_CONFIG = {
+    'enable_safety_checks': True,
+    'max_speed_limit': 5.0,  # m/s hard limit (cannot exceed)
+    'min_collision_distance': 0.15,  # meters (hard emergency brake)
+    'max_steering_rate': 1.0,  # radians/step (prevent jerky steering)
+    'max_episode_reward': 1000.0,  # Flag if episode reward > this (likely reward hacking)
+    'min_episode_reward': -100.0,  # Flag if episode reward < this (trapped/crashing)
+    'max_speed_for_turning': 2.0,  # m/s (reduce speed when steering >0.5)
+    'emergency_brake_lidar_threshold': 0.25,  # Force brake if lidar < this
+    'allow_unsafe_actions': False,  # Disable actions that violate constraints
+}
+
+# Reward validation thresholds (detect anomalies)
+REWARD_VALIDATION = {
+    'enable_validation': True,
+    'max_single_step_reward': 10.0,  # Flag if single step reward > this
+    'episode_reward_ema_window': 10,  # Exponential moving average window
+    'collision_rate_threshold': 0.5,  # Flag if collision_count/episode_count > 50%
+    'episode_efficiency_min': 0.1,  # Min reward per step (detect low-quality episodes)
+}
