@@ -49,3 +49,17 @@ desktop.ini
 trained_models/
 training_data/
 logs/
+
+# Large media files and documents
+*.pptx
+*.pdf
+*.mp4
+*.mov
+*.avi
+
+# Webots simulation files
+worlds/
+
+# System test and proposal directories (may contain large files)
+System_Test/Automated_Driving_Safety_Framework/
+Proposal(企画)/*.pptx
