@@ -67,6 +67,8 @@ class AutonomousDrivingController:
         # Initialize components
         self._setup_devices()
         self._setup_sensors()
+        print(f"[Controller] Distance sensors found: {len(self.distance_sensors)} "
+              f"({', '.join(ds.getName() for ds in self.distance_sensors) if self.distance_sensors else 'none'})")
         
         if self.use_model and not self.rl_train and not self.rl_eval:
             self._setup_ai_model()
