@@ -61,9 +61,9 @@ RL_CONFIG = {
     'tau': 0.005,
     'actor_lr': 1e-4,
     'critic_lr': 1e-3,
-    'batch_size': 128,
+    'batch_size': 64,  # Increased from 32 for more stable learning early
     'replay_size': 100000,
-    'warmup_steps': 2000,
+    'warmup_steps': 500,  # Reduced from 2000 - start learning early to prevent collision loops
     'action_noise': 0.4,  # Increased from 0.15 for better exploration
     'hidden_dim': 256,
     'max_episode_steps': 1200,
