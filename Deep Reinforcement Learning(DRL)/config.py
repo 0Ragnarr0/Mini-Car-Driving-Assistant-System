@@ -70,8 +70,8 @@ RL_CONFIG = {
     'save_every_episodes': 1,  # Save after EVERY episode to persist progress across runs
     'eval_episodes': 5,
     'lidar_feature_bins': 12,
-    'collision_distance_m': 0.25,  # Soft collision threshold (can recover)
-    'collision_distance_hard_m': 0.10,  # Hard collision threshold (end episode)
+    'collision_distance_m': 1.5,  # Soft collision threshold (can recover) - warning zone at 1.5m
+    'collision_distance_hard_m': 0.8,  # Hard collision threshold (end episode) - physical contact at 0.8m
     'default_reward_profile': 'balanced',
     # Optional checkpoint prefix (without _actor.pth / _critic.pth suffix)
     # Example: trained_models/ddpg_autonomous_driving_ep_50
@@ -114,7 +114,7 @@ RL_CONFIG = {
 SAFETY_CONFIG = {
     'enable_safety_checks': True,
     'max_speed_limit': 5.0,  # m/s hard limit (cannot exceed)
-    'min_collision_distance': 0.15,  # meters (hard emergency brake)
+    'min_collision_distance': 0.80,  # meters (hard emergency brake) - matches hard collision threshold
     'max_steering_rate': 1.0,  # radians/step (prevent jerky steering)
     'max_episode_reward': 1000.0,  # Flag if episode reward > this (likely reward hacking)
     'min_episode_reward': -100.0,  # Flag if episode reward < this (trapped/crashing)
