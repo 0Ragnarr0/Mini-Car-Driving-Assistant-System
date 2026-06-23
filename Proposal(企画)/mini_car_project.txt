@@ -1,0 +1,7 @@
+Car driving assistant
+-Use various sensors and cameras to get surrounding data and utilize those data to warn the driver of the incoming objects,also to auto lane adjustment,and auto parking using machine learning techniques like deep reinforcement learning and supervise learning.
+-Group Project.Group Name(Core4Drive)
+-Role-My role is implementation of AI machine learning model to handle auto-parking,lane adjust,
+
+
+
