@@ -203,16 +203,28 @@ class AutonomousDrivingController:
         if self.lidar is not None:
             self.lidar.enable(self.timestep)
         
-        # Optional: Distance sensors
+        # Optional: Distance sensors (left/right for lane keeping)
         self.distance_sensors = []
-        for actual_name in self._device_map.values():
-            if 'distance sensor' in actual_name.lower():
+        # Try specific names first
+        for name_pattern in ['left_distance', 'right_distance', 'distance_sensor']:
+            ds = self._get_device_if_exists([name_pattern, name_pattern.lower(), name_pattern.replace('_', ' ')])
+            if ds is not None:
                 try:
-                    ds = self.robot.getDevice(actual_name)
                     ds.enable(self.timestep)
                     self.distance_sensors.append(ds)
                 except Exception:
                     pass
+        
+        # Fallback: generic search for any remaining distance sensors
+        if len(self.distance_sensors) < 2:
+            for actual_name in self._device_map.values():
+                if 'distance' in actual_name.lower() and actual_name.lower() not in [d.getName().lower() for d in self.distance_sensors]:
+                    try:
+                        ds = self.robot.getDevice(actual_name)
+                        ds.enable(self.timestep)
+                        self.distance_sensors.append(ds)
+                    except Exception:
+                        pass
         
         # Optional: GPS/IMU
         self.gps = self._get_device_if_exists(['gps', 'GPS'])
