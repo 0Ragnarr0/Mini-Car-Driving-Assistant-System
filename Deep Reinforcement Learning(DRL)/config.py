@@ -70,7 +70,8 @@ RL_CONFIG = {
     'save_every_episodes': 1,  # Save after EVERY episode to persist progress across runs
     'eval_episodes': 5,
     'lidar_feature_bins': 12,
-    'collision_distance_m': 0.25,
+    'collision_distance_m': 0.25,  # Soft collision threshold (can recover)
+    'collision_distance_hard_m': 0.10,  # Hard collision threshold (end episode)
     'default_reward_profile': 'balanced',
     # Optional checkpoint prefix (without _actor.pth / _critic.pth suffix)
     # Example: trained_models/ddpg_autonomous_driving_ep_50

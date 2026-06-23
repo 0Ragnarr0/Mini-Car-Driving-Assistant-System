@@ -251,8 +251,10 @@ class AutonomousDrivingController:
         self.rl_episode_idx = 0
         self.rl_episode_step = 0
         self.rl_episode_reward = 0.0
+        self.rl_episode_collision_count = 0  # Track collisions per episode
         self.rl_max_episode_steps = int(RL_CONFIG.get('max_episode_steps', 1200))
         self.rl_collision_distance = float(RL_CONFIG.get('collision_distance_m', 0.25))
+        self.rl_collision_distance_hard = float(RL_CONFIG.get('collision_distance_hard_m', 0.10))  # Hard collision threshold
         self.rl_last_steering = 0.0
         self.rl_last_losses = None
         self.rl_save_every = int(RL_CONFIG.get('save_every_episodes', 10))
@@ -623,13 +625,30 @@ class AutonomousDrivingController:
             - lane_violation
         )
 
-        collision = (lidar_min < self.rl_collision_distance) or (dist_min < 0.05)
-        if collision:
-            reward -= collision_penalty
-
-        done = collision or (self.rl_episode_step >= self.rl_max_episode_steps)
+        # Two-tier collision detection: soft (recoverable) vs hard (end episode)
+        soft_collision = (lidar_min < self.rl_collision_distance) and (lidar_min >= self.rl_collision_distance_hard)
+        hard_collision = (lidar_min < self.rl_collision_distance_hard) or (dist_min < 0.05)
+        
+        collision_type = 'none'
+        if hard_collision:
+            collision_type = 'hard'
+            reward -= collision_penalty * 1.5  # Severe penalty for hard collision
+            self.rl_episode_collision_count += 1
+        elif soft_collision:
+            collision_type = 'soft'
+            reward -= collision_penalty * 0.5  # Mild penalty for soft collision (can recover)
+            self.rl_episode_collision_count += 1
+        
+        # Episode penalty: penalize episodes with multiple collisions to prevent crash-recovery learning
+        # Each additional collision in episode reduces final reward
+        if self.rl_episode_collision_count > 0:
+            reward -= 0.1 * (self.rl_episode_collision_count - 1)  # Increasing penalty for repeat collisions
+        
+        # End episode on hard collision or step limit (soft collisions allow recovery)
+        done = hard_collision or (self.rl_episode_step >= self.rl_max_episode_steps)
         info = {
-            'collision': collision,
+            'collision': collision_type,
+            'collision_count': self.rl_episode_collision_count,
             'lidar_min': lidar_min,
             'dist_min': dist_min,
         }
@@ -645,6 +664,7 @@ class AutonomousDrivingController:
         self.rl_episode_idx += 1
         self.rl_episode_step = 0
         self.rl_episode_reward = 0.0
+        self.rl_episode_collision_count = 0  # Reset collision counter
         self.rl_last_steering = 0.0
 
     def run_rl(self):
@@ -724,10 +744,11 @@ class AutonomousDrivingController:
             if done:
                 episode_rewards.append(self.rl_episode_reward)
                 avg_reward = np.mean(episode_rewards[-10:]) if episode_rewards else 0
+                collision_info = f"collisions={self.rl_episode_collision_count}" if self.rl_episode_collision_count > 0 else "collision=none"
                 print(
                     f"[RL] Episode {self.rl_episode_idx} finished: "
                     f"steps={self.rl_episode_step}, reward={self.rl_episode_reward:.2f}, "
-                    f"avg_10ep={avg_reward:.2f}, collision={info['collision']}"
+                    f"avg_10ep={avg_reward:.2f}, {collision_info}"
                 )
 
                 if self.rl_train and (self.rl_episode_idx + 1) % max(1, self.rl_save_every) == 0:
