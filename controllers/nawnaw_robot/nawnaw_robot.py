@@ -113,6 +113,40 @@ class AutonomousDrivingController:
                     pass
         return None
     
+    def _find_latest_checkpoint(self, model_prefix):
+        """Find the latest checkpoint matching model_prefix pattern."""
+        try:
+            model_dir = os.path.dirname(model_prefix)
+            if not os.path.isdir(model_dir):
+                return ""
+            
+            model_base = os.path.basename(model_prefix)
+            # Look for files like ddpg_autonomous_driving_ep_10_actor.pth
+            import glob
+            actor_files = glob.glob(f"{model_prefix}_ep_*_actor.pth")
+            if not actor_files:
+                return ""
+            
+            # Extract episode numbers and find the highest
+            episodes = []
+            for f in actor_files:
+                try:
+                    # Extract "_ep_NUMBER_" from filename
+                    import re
+                    match = re.search(r'_ep_(\d+)_', f)
+                    if match:
+                        episodes.append((int(match.group(1)), f))
+                except:
+                    pass
+            
+            if episodes:
+                latest_ep, _ = max(episodes, key=lambda x: x[0])
+                latest_prefix = f"{model_prefix}_ep_{latest_ep}"
+                return latest_prefix
+        except Exception as e:
+            pass
+        return ""
+    
     def _setup_devices(self):
         """Setup robot motors and devices."""
         if self.driver is not None:
@@ -241,6 +275,11 @@ class AutonomousDrivingController:
         ckpt_prefix = os.environ.get('NAWNAW_RL_CKPT_PREFIX', '').strip()
         if not ckpt_prefix:
             ckpt_prefix = str(RL_CONFIG.get('resume_checkpoint_prefix', '')).strip()
+        
+        # Auto-find latest checkpoint if none specified
+        if not ckpt_prefix and self.rl_train:
+            ckpt_prefix = self._find_latest_checkpoint(self.rl_model_prefix)
+        
         self.rl_resume_prefix = ckpt_prefix
 
         if ckpt_prefix:
@@ -249,14 +288,16 @@ class AutonomousDrivingController:
             if os.path.exists(actor_path) and os.path.exists(critic_path):
                 try:
                     self.rl_agent.load(ckpt_prefix)
-                    print(f"[Controller] Loaded RL checkpoint: {ckpt_prefix}")
+                    print(f"[Controller] ✓ RESUMED RL checkpoint: {ckpt_prefix}")
                 except Exception as exc:
                     print(f"[Controller] Failed to load checkpoint '{ckpt_prefix}': {exc}")
             else:
                 print(f"[Controller] RL checkpoint files not found for prefix: {ckpt_prefix}")
-
-        if self.rl_eval and not self.rl_resume_prefix:
-            print("[Controller] RL evaluation mode has no checkpoint prefix; policy will be untrained")
+        else:
+            if self.rl_train:
+                print("[Controller] Starting fresh (no checkpoint found)")
+            else:
+                print("[Controller] RL evaluation mode has no checkpoint prefix; policy will be untrained")
 
         print(f"[Controller] RL agent ready on device: {device} (state_dim={self.rl_state_dim})")
         print(f"[Controller] RL reward profile: {self.rl_reward_profile_name}")

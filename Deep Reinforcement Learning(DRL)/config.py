@@ -67,7 +67,7 @@ RL_CONFIG = {
     'action_noise': 0.4,  # Increased from 0.15 for better exploration
     'hidden_dim': 256,
     'max_episode_steps': 1200,
-    'save_every_episodes': 10,
+    'save_every_episodes': 1,  # Save after EVERY episode to persist progress across runs
     'eval_episodes': 5,
     'lidar_feature_bins': 12,
     'collision_distance_m': 0.25,
