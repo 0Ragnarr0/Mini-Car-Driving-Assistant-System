@@ -274,6 +274,9 @@ class AutonomousDrivingController:
         self.rl_save_every = int(RL_CONFIG.get('save_every_episodes', 10))
         self.rl_eval_episodes = int(RL_CONFIG.get('eval_episodes', 5))
         self.rl_model_prefix = os.path.join(DATA_CONFIG['models_dir'], 'ddpg_autonomous_driving')
+        
+        # Log collision thresholds
+        print(f"[Controller] Collision thresholds: soft={self.rl_collision_distance}m, hard={self.rl_collision_distance_hard}m")
 
         # Reward profile selection can be overridden at runtime.
         profile_name = os.environ.get(
@@ -790,10 +793,15 @@ class AutonomousDrivingController:
             collision_type = 'hard'
             reward -= collision_penalty * 1.5  # Severe penalty for hard collision
             self.rl_episode_collision_count += 1
+            if self.rl_episode_collision_count == 1:  # Log first collision in episode
+                trigger_source = "lidar" if (lidar_min < self.rl_collision_distance_hard) else "distance sensor"
+                print(f"[RL] ⚠️ HARD COLLISION at step {self.step_count} ({trigger_source}: {lidar_min:.3f}m vs threshold {self.rl_collision_distance_hard}m)")
         elif soft_collision:
             collision_type = 'soft'
             reward -= collision_penalty * 0.5  # Mild penalty for soft collision (can recover)
             self.rl_episode_collision_count += 1
+            if self.rl_episode_collision_count == 1:  # Log first collision in episode
+                print(f"[RL] ⚠️ SOFT COLLISION at step {self.step_count} (lidar: {lidar_min:.3f}m between {self.rl_collision_distance_hard}m and {self.rl_collision_distance}m)")
         
         # Episode penalty: penalize episodes with multiple collisions to prevent crash-recovery learning
         # Each additional collision in episode reduces final reward
@@ -911,10 +919,10 @@ class AutonomousDrivingController:
                         f", updates={self.rl_last_losses['updates']}"
                     )
                 learning_active = "✓LEARNING" if len(self.rl_agent.replay) >= self.rl_agent.warmup_steps else "warming up"
+                sensor_info = f"lidar={info['lidar_min']:.2f}m, dist={info.get('dist_min', 10.0):.2f}m"
                 print(
                     f"[RL] [{learning_active}] step={self.step_count}, episode={self.rl_episode_idx}, "
-                    f"ep_step={self.rl_episode_step}, ep_reward={self.rl_episode_reward:.2f}, "
-                    f"lidar_min={info['lidar_min']:.2f}m{loss_msg}"
+                    f"ep_step={self.rl_episode_step}, ep_reward={self.rl_episode_reward:.2f}, {sensor_info}{loss_msg}"
                 )
 
             if done:
