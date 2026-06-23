@@ -624,6 +624,49 @@ class AutonomousDrivingController:
         except Exception:
             return 0.0
 
+    def _detect_traffic_light_from_camera(self, camera_image):
+        """
+        Detect traffic light state from camera image (red/yellow/green lights).
+        Returns traffic light state: 'red', 'yellow', 'green', or 'none'.
+        """
+        try:
+            if camera_image is None or camera_image.size == 0:
+                return 'none'
+            
+            img = np.asarray(camera_image, dtype=np.float32)
+            if img.shape != (64, 64, 3):
+                return 'none'
+            
+            # Look for traffic lights in upper half of image (forward view, above horizon)
+            # Webots fisheye points forward-down, traffic lights appear in upper portion
+            roi_end = 40  # Upper/middle portion (0-40)
+            roi = img[:roi_end, :, :]  # Shape: (40, 64, 3)
+            
+            # Red light: R>180, G<100, B<100
+            red_mask = (roi[:, :, 0] > 180) & (roi[:, :, 1] < 100) & (roi[:, :, 2] < 100)
+            red_pixels = np.sum(red_mask)
+            
+            # Green light: R<100, G>180, B<100
+            green_mask = (roi[:, :, 0] < 100) & (roi[:, :, 1] > 180) & (roi[:, :, 2] < 100)
+            green_pixels = np.sum(green_mask)
+            
+            # Yellow light: R>180, G>180, B<100
+            yellow_mask = (roi[:, :, 0] > 180) & (roi[:, :, 1] > 180) & (roi[:, :, 2] < 100)
+            yellow_pixels = np.sum(yellow_mask)
+            
+            # Threshold: need at least 15 pixels to consider detected
+            threshold = 15
+            if red_pixels > threshold and red_pixels > green_pixels and red_pixels > yellow_pixels:
+                return 'red'
+            elif green_pixels > threshold and green_pixels > red_pixels and green_pixels > yellow_pixels:
+                return 'green'
+            elif yellow_pixels > threshold and yellow_pixels > red_pixels and yellow_pixels > green_pixels:
+                return 'yellow'
+            else:
+                return 'none'
+        except Exception:
+            return 'none'
+
     def _compute_rl_reward_done(self, sensor_data, action):
         """Compute reward and terminal condition from current observation and action."""
         steer_cmd = float(action[0])
@@ -682,14 +725,48 @@ class AutonomousDrivingController:
             if side_min < 0.2:
                 lane_violation += lane_violation_penalty * 0.5
 
+        # Traffic light detection and rewards
+        traffic_light_bonus = 0.0
+        traffic_light_penalty = 0.0
+        camera_image = sensor_data.get('fisheye')
+        traffic_light_state = self._detect_traffic_light_from_camera(camera_image)
+        
+        # Calculate current speed (0 = stationary, 1 = moving at max speed)
+        current_speed = max(0.0, (speed_cmd + 1.0) * 0.5)  # Normalized [0, 1]
+        
+        if traffic_light_state == 'red':
+            # Red light: reward for stopping or slowing down
+            if current_speed < 0.2:  # Nearly stopped
+                traffic_light_bonus = 0.3  # Good! Stopped at red light
+            elif current_speed < 0.5:  # Slowing down
+                traffic_light_bonus = 0.1  # Okay, decelerating
+            else:
+                # Running red light - severe penalty
+                traffic_light_penalty = 2.0  # Big penalty for traffic violation
+        
+        elif traffic_light_state == 'green':
+            # Green light: reward for moving
+            if current_speed > 0.5:
+                traffic_light_bonus = 0.2  # Good! Moving on green
+        
+        elif traffic_light_state == 'yellow':
+            # Yellow light: reward for caution (slowing down or proceeding carefully)
+            if current_speed < 0.5:
+                traffic_light_bonus = 0.1  # Good! Slowing down on yellow
+            elif current_speed > 0.7:
+                # Aggressive on yellow - slight penalty
+                traffic_light_penalty = 0.3
+
         reward = (
             base_reward 
             + forward_weight * forward_reward 
             + avoidance_bonus 
             + lane_keeping_bonus
+            + traffic_light_bonus
             - steering_penalty 
             - risk_penalty 
             - lane_violation
+            - traffic_light_penalty
         )
 
         # Two-tier collision detection: soft (recoverable) vs hard (end episode)
@@ -718,6 +795,7 @@ class AutonomousDrivingController:
             'collision_count': self.rl_episode_collision_count,
             'lidar_min': lidar_min,
             'dist_min': dist_min,
+            'traffic_light': traffic_light_state,
         }
         return float(reward), done, info
 
@@ -770,6 +848,13 @@ class AutonomousDrivingController:
                         speed_cmd = -1.0  # Full reverse (emergency brake)
                         if self.step_count % 500 == 0:
                             print(f"[SAFETY] Emergency brake at step {self.step_count} (lidar={lidar_current:.2f}m)")
+                
+                # Red light override: Safety rule for traffic lights
+                traffic_light = self._detect_traffic_light_from_camera(sensor_data.get('fisheye'))
+                if traffic_light == 'red':
+                    speed_cmd = -1.0  # Force brake on red light (hard constraint, not learned)
+                    if self.step_count % 500 == 0:
+                        print(f"[SAFETY] Red light override at step {self.step_count}")
 
             self.apply_control(steering_cmd, speed_cmd)
             self.rl_last_steering = float(action[0])
