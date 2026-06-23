@@ -562,6 +562,44 @@ class AutonomousDrivingController:
         )
         return state.astype(np.float32)
 
+    def _detect_lane_from_camera(self, camera_image):
+        """
+        Detect lane markings from camera image (white/yellow pixels).
+        Returns lateral offset from lane center (-1 to +1).
+        """
+        try:
+            if camera_image is None or camera_image.size == 0:
+                return 0.0  # No detection = assume centered
+            
+            img = np.asarray(camera_image, dtype=np.float32)
+            if img.shape != (64, 64, 3):
+                return 0.0
+            
+            # Look for white/yellow lane markings in lower half of image (forward view)
+            # Webots fisheye points forward-down, so use bottom rows
+            roi_start = 32  # Bottom half
+            roi = img[roi_start:, :, :]  # Shape: (32, 64, 3)
+            
+            # White: R>200, G>200, B>200
+            # Yellow: R>200, G>200, B<100
+            white_mask = (roi[:, :, 0] > 180) & (roi[:, :, 1] > 180) & (roi[:, :, 2] > 180)
+            yellow_mask = (roi[:, :, 0] > 180) & (roi[:, :, 1] > 180) & (roi[:, :, 2] < 100)
+            lane_mask = white_mask | yellow_mask
+            
+            if np.sum(lane_mask) < 10:  # Too few pixels detected
+                return 0.0
+            
+            # Find weighted center column of lane markings
+            cols = np.arange(64)
+            weights = np.sum(lane_mask, axis=0)  # Sum per column
+            weighted_col = np.sum(cols * weights) / np.sum(weights)
+            
+            # Normalize to [-1, +1]: center (32) = 0, left (0) = -1, right (63) = +1
+            lateral_offset = (weighted_col - 32.0) / 32.0
+            return float(np.clip(lateral_offset, -1.0, 1.0))
+        except Exception:
+            return 0.0
+
     def _compute_rl_reward_done(self, sensor_data, action):
         """Compute reward and terminal condition from current observation and action."""
         steer_cmd = float(action[0])
@@ -593,27 +631,32 @@ class AutonomousDrivingController:
         risk_penalty = risk_penalty_weight * obstacle_risk * max(0.0, (speed_cmd + 1.0) * 0.5)
         avoidance_bonus = avoidance_bonus_weight * obstacle_risk * abs(steer_cmd)
 
-        # Lane-keeping reward: bonus for staying centered (low side distance variance)
-        # Penalty for going off-road (distance sensors indicate road edges)
+        # Vision-based lane detection: bonus for staying within lane markings
+        # Detect lane from camera image (white/yellow road markings)
         lane_keeping_bonus = 0.0
         lane_violation = 0.0
         
+        camera_image = sensor_data.get('fisheye')
+        lateral_offset = self._detect_lane_from_camera(camera_image)
+        
+        # Lateral offset from lane center: [-1, +1]
+        # Reward for small lateral offset (near center): abs(offset) < 0.3
+        # Penalty for large offset (near lane edge): abs(offset) > 0.6
+        abs_offset = abs(lateral_offset)
+        if abs_offset < 0.3:
+            # Near lane center - good!
+            lane_keeping_bonus = lane_keeping_bonus_weight * (1.0 - abs_offset / 0.3)
+        elif abs_offset > 0.6:
+            # Near lane edge - warning!
+            lane_violation = lane_violation_penalty * (abs_offset - 0.6) / 0.4
+        
+        # Fallback: Also check distance sensors (left/right) in case lane detection fails
         if distances and len(distances) >= 2:
             side_distances = np.asarray(distances, dtype=np.float32)
-            # If side sensors are relatively equal, car is centered
-            # If one side is much closer, car is drifting
-            if len(side_distances) > 0:
-                side_min = float(np.min(side_distances))
-                side_max = float(np.max(side_distances))
-                side_range = side_max - side_min
-                
-                # Bonus for balanced center position (small side range)
-                if side_range < 1.0:
-                    lane_keeping_bonus = lane_keeping_bonus_weight * (1.0 - side_range)
-                
-                # Penalty for excessive off-road drift (very close to one side)
-                if side_min < 0.3:
-                    lane_violation = lane_violation_penalty * (1.0 - (side_min / 0.3))
+            side_min = float(np.min(side_distances))
+            # Hard penalty for going off-road completely (< 0.2m to boundary)
+            if side_min < 0.2:
+                lane_violation += lane_violation_penalty * 0.5
 
         reward = (
             base_reward 
