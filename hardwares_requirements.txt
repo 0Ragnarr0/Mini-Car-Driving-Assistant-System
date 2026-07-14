@@ -1,0 +1,45 @@
+
+## Steering System
+
+| Hardware | What it does | What's lacking if missing |
+|---|---|---|
+| **Steering servo (1×)** | Turns the front wheels left/right; takes a single steering command from the controller. | No steering at all — car can only go straight. One servo is enough (mechanical Ackermann). |
+| **Ackermann steering linkage** (knuckles, tie rod, ball links) | Makes the inside wheel turn sharper than the outside so all wheels follow the same turn center — no tire scrub. | Tires scrub and fight in turns; inaccurate turning radius; bicycle-model control math no longer matches reality. |
+| **Front uprights/knuckles with kingpin pivots** | The pivot points the front wheels rotate on. | Wheels can't steer; no place to mount front wheels. |
+
+> **Decision made:** single servo + mechanical Ackermann (simpler, more reliable, fits our RL control). Easiest build: use a **1/10 RC car front end** and 3D-print only the chassis adapter plate.
+
+Search: Thingiverse / Printables for "Ackermann steering," "RC car steering knuckle," or "1/10 RC front upright."
+## Wheels & Drivetrain
+
+| Hardware | What it does | What's lacking if missing |
+
+| **4× wheels** (1/10 RC, 12 mm hex, rubber tires + foam inserts, ~60–65 mm) | Contact with ground; rubber gives consistent grip. | Hard/mismatched wheels slip → real behavior won't match the simulator (sim-to-real fails). |
+| **Front bearing hubs (2×)** | Let the un-driven front wheels spin freely while steering. | Front wheels bind or drag; steering and rolling are inaccurate. |
+| **Rear driven hubs (2×)** | Couple the rear wheels to the motor for propulsion. | No drive to the wheels — car can't move. |
+| **Drive motor + ESC/motor driver** | Provides forward/reverse propulsion; ESC controls speed. | No movement; no reverse (needed for parking/backing out). |
+| **Differential (if rear-driven)** | Lets rear wheels spin at different speeds in turns. | Rear tires scrub in turns; jerky cornering. |
+
+## Perception & Compute
+
+| Hardware | What it does | What's lacking if missing |
+
+| **Camera (forward-facing)** | Feeds images to YOLOP for lane detection + object detection. | No lane-keeping, no obstacle/lane awareness — the whole perception pipeline is blind. |
+| **Onboard compute** (e.g. Jetson Nano/Orin or Raspberry Pi + accelerator) | Runs YOLOP perception and the TD3 policy in real time. | Can't run the neural networks on-car; no autonomy without a tethered PC. |
+| **(Optional) distance sensors** (ultrasonic / ToF / small LiDAR) | Backup obstacle detection for stop/avoid/reverse, especially close range and blind spots. | Relies on camera alone; weaker close-range and low-light obstacle safety. |
+
+## Power & Electronics
+
+| Hardware | What it does | What's lacking if missing |
+
+| **Battery (LiPo) + power distribution** | Powers motor, servo, compute, sensors. | Nothing runs. Compute and motor often need **separate/regulated supplies** so motor noise doesn't crash the computer. |
+| **Microcontroller** (e.g. Arduino/ESP32) *(optional but common)* | Bridges compute to servo/ESC (PWM), reads sensors. | Compute board may not drive servo/ESC cleanly; harder real-time motor/servo timing. |
+| **Chassis / 3D-printed frame** | Holds everything together at correct geometry (wheelbase, track width). | Misaligned geometry breaks Ackermann and odometry; parts shift under vibration. |
+
+## Priority order (if building incrementally)
+
+1. **Chassis + steering (servo, Ackermann) + drivetrain (motor, wheels, hubs)** → car physically drives and steers.
+2. **Power system** → reliable, separated power for motor vs. compute.
+3. **Compute + camera** → run YOLOP perception.
+4. **Deploy TD3 policy** → autonomous control.
+5. **(Optional) distance sensors** → extra safety margin for stop/avoid/reverse.
